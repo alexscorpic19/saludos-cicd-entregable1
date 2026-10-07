@@ -46,7 +46,7 @@ jobs:
             $DOCKERHUB_USERNAME/saludos-database:$TAG
           ok=0
           for i in $(seq 1 30); do
-            docker exec smoke-db pg_isready -U postgres -d saludos >/dev/null 2>&1 && { ok=1; break; }
+            docker exec smoke-db psql -U postgres -d saludos -tAc "SELECT count(*) FROM saludos" >/dev/null 2>&1 && { ok=1; break; }
             sleep 2
           done
           if [ "$ok" != "1" ]; then echo "Postgres no subio"; docker logs smoke-db; exit 1; fi
@@ -66,7 +66,7 @@ jobs:
             $DOCKERHUB_USERNAME/saludos-database:$TAG
           ok=0
           for i in $(seq 1 30); do
-            docker exec t-db pg_isready -U postgres -d saludos >/dev/null 2>&1 && { ok=1; break; }
+            docker exec t-db psql -U postgres -d saludos -tAc "SELECT count(*) FROM saludos" >/dev/null 2>&1 && { ok=1; break; }
             sleep 2
           done
           if [ "$ok" != "1" ]; then docker logs t-db; exit 1; fi
@@ -96,9 +96,18 @@ jobs:
 
       - name: Test - frontend contra backend (proxy /api)
         run: |
-          docker rm -f f-fe f-be 2>/dev/null || true
+          docker rm -f f-fe f-be f-db 2>/dev/null || true
           docker network rm f-net 2>/dev/null || true
           docker network create f-net
+          docker run -d --name f-db --network f-net --network-alias database \
+            -e POSTGRES_DB=saludos -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=smoke \
+            $DOCKERHUB_USERNAME/saludos-database:$TAG
+          ok=0
+          for i in $(seq 1 30); do
+            docker exec f-db psql -U postgres -d saludos -tAc "SELECT count(*) FROM saludos" >/dev/null 2>&1 && { ok=1; break; }
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then docker logs f-db; exit 1; fi
           docker run -d --name f-be --network f-net --network-alias backend \
             -e DB_HOST=database -e DB_PORT=5432 -e DB_NAME=saludos \
             -e DB_USER=postgres -e DB_PASSWORD=smoke -e APP_ENV=testing \
@@ -121,7 +130,7 @@ jobs:
           curl -fsS http://localhost:18080/api/health | grep -q '"status":"OK"'
           curl -fsS http://localhost:18080/api/saludo | grep -q '"mensaje"'
           curl -fsS http://localhost:18080/api/config | grep -q '"environment"'
-          docker rm -f f-fe f-be
+          docker rm -f f-fe f-be f-db
           docker network rm f-net
           echo "Test frontend + proxy .. OK"
 
