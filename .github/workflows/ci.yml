@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  TAG: ${{ github.sha }}
+
+jobs:
+  code:
+    name: Code
+    runs-on: [self-hosted, cicd]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+  build:
+    name: Build
+    needs: code
+    runs-on: [self-hosted, cicd]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build imagenes (Docker basico)
+        run: |
+          echo "Release: $TAG"
+          docker build -t $DOCKERHUB_USERNAME/saludos-database:$TAG  ./db
+          docker build -t $DOCKERHUB_USERNAME/saludos-backend:$TAG   ./backend
+          docker build -t $DOCKERHUB_USERNAME/saludos-frontend:$TAG  ./frontend
+          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep saludos
+
+  test:
+    name: Test
+    needs: build
+    runs-on: [self-hosted, cicd]
+    steps:
+      - name: Test - base de datos
+        run: |
+          docker rm -f smoke-db 2>/dev/null || true
+          docker run -d --name smoke-db \
+            -e POSTGRES_DB=saludos -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=smoke \
+            $DOCKERHUB_USERNAME/saludos-database:$TAG
+          ok=0
+          for i in $(seq 1 30); do
+            docker exec smoke-db pg_isready -U postgres -d saludos >/dev/null 2>&1 && { ok=1; break; }
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then echo "Postgres no subio"; docker logs smoke-db; exit 1; fi
+          COUNT=$(docker exec smoke-db psql -U postgres -d saludos -tAc "SELECT count(*) FROM saludos;")
+          echo "Filas sembradas por init.sql: $COUNT"
+          if [ "${COUNT:-0}" -lt 1 ]; then echo "init.sql no aplico"; docker logs smoke-db; exit 1; fi
+          docker rm -f smoke-db
+          echo "Test BD .. OK"
+
+      - name: Test - backend contra base de datos
+        run: |
+          docker rm -f t-be t-db 2>/dev/null || true
+          docker network rm t-net 2>/dev/null || true
+          docker network create t-net
+          docker run -d --name t-db --network t-net --network-alias database \
+            -e POSTGRES_DB=saludos -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=smoke \
+            $DOCKERHUB_USERNAME/saludos-database:$TAG
+          ok=0
+          for i in $(seq 1 30); do
+            docker exec t-db pg_isready -U postgres -d saludos >/dev/null 2>&1 && { ok=1; break; }
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then docker logs t-db; exit 1; fi
+          docker run -d --name t-be --network t-net \
+            -e DB_HOST=database -e DB_PORT=5432 -e DB_NAME=saludos \
+            -e DB_USER=postgres -e DB_PASSWORD=smoke -e APP_ENV=testing \
+            $DOCKERHUB_USERNAME/saludos-backend:$TAG
+          ok=0
+          for i in $(seq 1 30); do
+            docker exec t-be python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=2)" >/dev/null 2>&1 && { ok=1; break; }
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then echo "Backend no responde"; docker logs t-be; exit 1; fi
+          docker exec t-be python -c "
+          import urllib.request, json
+          health = json.load(urllib.request.urlopen('http://localhost:5000/health', timeout=3))
+          assert health['status'] == 'OK', health
+          config = json.load(urllib.request.urlopen('http://localhost:5000/config', timeout=3))
+          assert config['environment'] == 'testing', config
+          saludo = json.load(urllib.request.urlopen('http://localhost:5000/saludo', timeout=3))
+          assert saludo.get('mensaje'), saludo
+          print('health:', health, '| config:', config, '| saludo:', saludo)
+          "
+          docker rm -f t-be t-db
+          docker network rm t-net
+          echo "Test backend .. OK"
+
+      - name: Test - frontend contra backend (proxy /api)
+        run: |
+          docker rm -f f-fe f-be 2>/dev/null || true
+          docker network rm f-net 2>/dev/null || true
+          docker network create f-net
+          docker run -d --name f-be --network f-net --network-alias backend \
+            -e DB_HOST=database -e DB_PORT=5432 -e DB_NAME=saludos \
+            -e DB_USER=postgres -e DB_PASSWORD=smoke -e APP_ENV=testing \
+            $DOCKERHUB_USERNAME/saludos-backend:$TAG
+          ok=0
+          for i in $(seq 1 30); do
+            docker exec f-be python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=2)" >/dev/null 2>&1 && { ok=1; break; }
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then docker logs f-be; exit 1; fi
+          docker run -d --name f-fe --network f-net -p 18080:80 \
+            -e BACKEND_HOST=backend -e BACKEND_PORT=5000 -e APP_ENV=testing \
+            $DOCKERHUB_USERNAME/saludos-frontend:$TAG
+          ok=0
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:18080/ >/dev/null 2>&1 && { ok=1; break; }
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then echo "Frontend no responde"; docker logs f-fe; exit 1; fi
+          curl -fsS http://localhost:18080/api/health | grep -q '"status":"OK"'
+          curl -fsS http://localhost:18080/api/saludo | grep -q '"mensaje"'
+          curl -fsS http://localhost:18080/api/config | grep -q '"environment"'
+          docker rm -f f-fe f-be
+          docker network rm f-net
+          echo "Test frontend + proxy .. OK"
+
+  release:
+    name: Release
+    needs: test
+    runs-on: [self-hosted, cicd]
+    steps:
+      - name: Release - tag versionado + latest
+        run: |
+          for app in database backend frontend; do
+            docker tag $DOCKERHUB_USERNAME/saludos-$app:$TAG $DOCKERHUB_USERNAME/saludos-$app:latest
+          done
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep saludos
+
+  push:
+    name: Push
+    needs: release
+    runs-on: [self-hosted, cicd]
+    steps:
+      - name: Push a Docker Hub (tag unico + latest)
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          for app in database backend frontend; do
+            docker push $DOCKERHUB_USERNAME/saludos-$app:$TAG
+            docker push $DOCKERHUB_USERNAME/saludos-$app:latest
+          done
+          docker logout
+          echo "Release publicado: $TAG"

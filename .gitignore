@@ -1,0 +1,20 @@
+# Secretos y llaves
+.env
+.env.local
+*.pem
+*.key
+*.ppk
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Salidas locales
+docker-compose.local.yml
+*.log
+
+# Sistema / editores
+.DS_Store
+.idea/
+.vscode/
