@@ -3,11 +3,16 @@
 > Registro de cada error encontrado: qué pasó → mensaje exacto → causa → solución.
 > Alimenta la **pregunta 5** de `Entregable1_Respuestas.md`.
 
-Plantilla:
+Resumen:
 
 | # | Fecha | Fase | Error / mensaje exacto | Causa | Solución |
 |---|---|---|---|---|---|
-| 1 |  |  |  |  |  |
+| 1 | 07/10 | 0 | `FATAL: database "saludos" does not exist` en el smoke test | carrera con el init de Postgres (`pg_isready` responde antes de crear la BD) | esperar `SELECT count(*) FROM saludos` |
+| 2 | 08/10 | 1 | `InvalidParameterValue: Group names may not be in the format sg-*` | AWS reserva el prefijo `sg-` | renombrar a `saludos-*` |
+| 3 | 08/10 | 1 | `PendingVerification: ... region being validated` | validación automática de cuenta nueva | esperar el correo y reintentar |
+| 4 | 10/10 | 2 | clave RDS perdida al limpiarse `/tmp` | secret guardado en un temporal | rotar con `modify-db-instance --master-user-password` y guardar en `~/.secrets/` |
+| 5 | 10/10 | 2 | `scp: dest open "/home/ubuntu/...": Permission denied` | OpenSSH 9 usa SFTP | `ssh ... 'cat > archivo' < archivo` |
+| 6 | 10/10 | 3 | `curl: (28) Failed to connect to 10.0.0.98 port 8080` | 8080 solo abierto desde el ALB | regla 8080 desde la propia SG y relanzar el CD |
 
 ---
 
@@ -26,12 +31,6 @@ Plantilla:
 
 ---
 
-## 2.- **Fecha:**
-- **Fase:**
-- **Qué pasó:**
-- **Mensaje exacto:**
-- **Causa raíz:**
-- **Solución:**
 ## 2. AWS rechaza nombres de security group que empiezan por `sg-`
 
 - **Fecha:** 08/10/2026
