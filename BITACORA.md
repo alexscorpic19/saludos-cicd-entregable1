@@ -13,6 +13,7 @@ Resumen:
 | 4 | 10/10 | 2 | clave RDS perdida al limpiarse `/tmp` | secret guardado en un temporal | rotar con `modify-db-instance --master-user-password` y guardar en `~/.secrets/` |
 | 5 | 10/10 | 2 | `scp: dest open "/home/ubuntu/...": Permission denied` | OpenSSH 9 usa SFTP | `ssh ... 'cat > archivo' < archivo` |
 | 6 | 10/10 | 3 | `curl: (28) Failed to connect to 10.0.0.98 port 8080` | 8080 solo abierto desde el ALB | regla 8080 desde la propia SG y relanzar el CD |
+| 7 | 10/10 | 4 | `DependencyViolation: resource sg-... has a dependent object` al borrar SGs | reglas de ingress referenciaban otros SGs (ciclo `saludos-alb` ↔ `saludos-frontend` y auto-referencias) | `revoke-security-group-ingress` de las referencias y luego `delete-security-group` |
 
 ---
 
@@ -76,3 +77,19 @@ Resumen:
   el runner sale con su propia IP, no con la del ALB → el firewall descartaba el paquete.
 - **Solución:** añadir en `saludos-frontend` la regla *TCP 8080 desde la propia SG*
   (`fe-1 → fe-2`), igual que ya existía para el puerto 22, y relanzar el CD → verde.
+
+---
+
+## 7. AWS no deja borrar los security groups (destrucción final)
+
+- **Fecha:** 10/10/2026
+- **Fase:** 4 — destrucción de `saludos-vpc`
+- **Mensaje exacto:** `DependencyViolation: resource sg-03a6766d7cbc15c31 has a dependent object`
+  (y lo mismo para `saludos-frontend`)
+- **Qué pasó:** con ALB, EC2, RDS, NAT y ENIs ya borrados, `delete-security-group`
+  seguía fallando para los SG `saludos-alb` y `saludos-frontend`.
+- **Causa raíz:** AWS no permite borrar un SG mientras **otras reglas de ingress lo
+  referencian**: `saludos-frontend` tenía 8080 ← `saludos-alb`, 8080 ← ella misma y
+  22 ← ella misma (ciclo entre los dos grupos).
+- **Solución:** `revoke-security-group-ingress` de esas referencias y acto seguido
+  `delete-security-group`; después sí se pudo `delete-vpc`.
