@@ -1,0 +1,41 @@
+name: Smoke
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Smoke
+    runs-on: [self-hosted, cicd]
+    steps:
+      - name: Runner local
+        run: |
+          echo "host: $(hostname)"
+          id
+          docker version --format '{{.Server.Version}}'
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}'
+
+      - name: Clave SSH desde secret
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY_B64 }}" | base64 -d > ~/.ssh/saludos-key.pem
+          chmod 600 ~/.ssh/saludos-key.pem
+          for h in ${{ vars.BACKEND_PRIVATE_IP }} ${{ vars.FE2_PRIVATE_IP }}; do
+            ssh-keyscan -H $h >> ~/.ssh/known_hosts 2>/dev/null
+          done
+
+      - name: SSH a backend-1
+        run: |
+          ssh -i ~/.ssh/saludos-key.pem -o BatchMode=yes ubuntu@${{ vars.BACKEND_PRIVATE_IP }} \
+            'hostname; docker ps -a --format "{{.Names}} {{.Status}}"'
+
+      - name: SSH a frontend-2
+        run: |
+          ssh -i ~/.ssh/saludos-key.pem -o BatchMode=yes ubuntu@${{ vars.FE2_PRIVATE_IP }} \
+            'hostname; docker ps -a --format "{{.Names}} {{.Status}}"'
+
+      - name: Limpieza de la clave
+        if: always()
+        run: rm -f ~/.ssh/saludos-key.pem

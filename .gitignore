@@ -18,3 +18,6 @@ docker-compose.local.yml
 .DS_Store
 .idea/
 .vscode/
+
+# Capturas (nunca subirlas al repo publico)
+ImprPaint/
